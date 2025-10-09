@@ -1,0 +1,120 @@
+import pandas as pd
+from collections import Counter
+import os
+import sys
+
+# --- CRITICAL FIX: DEFINE BASE PATH ---
+BASE_PATH = "/Users/varshinisakthi/Desktop/extracted_sequences/"
+
+# Define the full path and names of your new CSV files
+file_4dai_name = os.path.join(BASE_PATH, "Ghaemli.xlsx - siggenes-IR vs IS 4dai-not comm.csv")
+file_10dai_name = os.path.join(BASE_PATH, "Ghaemli.xlsx - siggenes-IR vs IS 10dai-not com.csv")
+
+# --- Phase 1: Load, Combine, and Filter Differential Expression Data ---
+
+def load_clean_filter_deg(filepath, timepoint):
+    # CRITICAL FIX 1: Use header=0 (the first row) as confirmed by file snippets.
+    try:
+        data = pd.read_csv(filepath, header=0)
+    except pd.errors.ParserError:
+        # Fallback for non-standard separators (like tabs)
+        data = pd.read_csv(filepath, header=0, sep='\t')
+    
+    # CRITICAL FIX 2: Strip all leading/trailing whitespace from column names
+    # This prevents invisible spaces from breaking the 'Gene name' lookup.
+    data.columns = data.columns.str.strip()
+    
+    # CRITICAL FIX 3: Only rename 'Gene description' to 'Gene_description' for script consistency,
+    # and confirm 'Gene name' and 'log2FoldChange' retain their exact user-specified names.
+    data = data.rename(columns={
+        'Gene description': 'Gene_description' 
+        # Note: 'Gene name' and 'log2FoldChange' are used as is after stripping.
+    })
+    
+    # 3. Select columns using the consistent names
+    # 'Gene name' (with space) and 'Gene_description' (with underscore)
+    data = data[['Gene name', 'log2FoldChange', 'Gene_description']].copy()
+    
+    data['Time_point'] = timepoint
+    data['log2FoldChange'] = pd.to_numeric(data['log2FoldChange'], errors='coerce')
+    data = data.dropna(subset=['log2FoldChange'])
+    
+    # Filter for core resistance candidates (Log2 Fold Change > 1.5)
+    data = data[data['log2FoldChange'] > 1.5]
+    return data
+
+try:
+    print("Loading and filtering actual CSV data...")
+    deg_4dai = load_clean_filter_deg(file_4dai_name, "4dai")
+    deg_10dai = load_clean_filter_deg(file_10dai_name, "10dai")
+
+    core_resistance_genes = pd.concat([deg_4dai, deg_10dai], ignore_index=True)
+    # Use 'Gene name' for subsetting
+    core_resistance_genes = core_resistance_genes.sort_values(by='log2FoldChange', ascending=False).drop_duplicates(subset='Gene name', keep='first')
+
+    print(f"Phase 1 SUCCESS: Found {len(core_resistance_genes)} core resistance candidate genes with Log2FC > 1.5.")
+    print("\nTop 5 Final Candidates:")
+    print(core_resistance_genes.head().to_markdown(index=False))
+    
+    # Save the full list of candidates to the BASE_PATH
+    core_resistance_genes.to_csv(os.path.join(BASE_PATH, "full_core_resistance_candidates.csv"), index=False)
+    
+except FileNotFoundError as e:
+    print(f"\nFATAL ERROR: Files not found. The path or filename is incorrect. Please double-check the BASE_PATH and file names.")
+    print(f"Attempted path: {e.filename}")
+    sys.exit() 
+except Exception as e:
+    print(f"\nFATAL EXECUTION ERROR: An unexpected error occurred in Phase 1: {e}")
+    sys.exit() 
+
+# --- Phase 3: Structural Interpretation (Using Placeholder Sequences) ---
+# This section generates the Actionable Insights.
+
+top_genes = core_resistance_genes.head(5) 
+
+# Placeholder sequence data based on common top candidates found in these files
+sequence_data = []
+# Use 'Gene name' for lookup
+if 'Bv_21840_zgho' in top_genes['Gene name'].values:
+    sequence_data.append({'Gene name': 'Bv_21840_zgho', 'Sequence': 'MTSKLKIPPLTKLVEFLAELAEGSPRVIVVGTSRGRQASLLGQLASALDEKGKVMKGEHLSGDRVVTFGASTQGDVLSTLAELNKLGVTISLSDHVLLLHG', 'Description_Proxy': 'Methyltransferase'})
+# Use 'Gene name' for key
+if 'Bv3_066270_goti' in top_genes['Gene name'].values:
+    sequence_data.append({'Gene name': 'Bv3_066270_goti', 'Sequence': 'MVKSLLLRHSRARVVVLTNLTRLRTITKRLVSSPLGIVITDTSFEEVLDSKLPLPPRDLRRLQGSLDPLVLRLKLLLSVGLKVSLSYQDSLEFASLDRLSELKLQKLTLRGLESLRLGSNKLQKLSLEKIKLLNLSHNSIQTLPPAAASAL', 'Description_Proxy': 'RPP13-like protein 1'})
+
+sequences_df = pd.DataFrame(sequence_data)
+
+final_analysis_df = sequences_df.merge(
+    # Use 'Gene name' for selection
+    core_resistance_genes[['Gene name', 'log2FoldChange', 'Gene_description']], 
+    # Use 'Gene name' for merging
+    on='Gene name', 
+    how='inner'
+)
+
+analysis_results = []
+for index, row in final_analysis_df.iterrows():
+    seq = row['Sequence']
+    residue_counts = Counter(seq)
+    leucine_ratio = residue_counts.get('L', 0) / len(seq) if len(seq) > 0 else 0
+    
+    interpretation = ""
+    actionable_insight = ""
+    
+    if 'RPP13-like' in row['Gene_description']:
+        interpretation = f"Potential BCN effector binding site (LRR domain). Leucine Ratio: **{leucine_ratio:.3f}**."
+        actionable_insight = "Target LRR domain with synthetic peptide mimetics to block effector binding."
+    elif 'Methyltransferase' in row['Gene_description']:
+        interpretation = "Enzyme with potential SAM-binding active site, making it a druggable target."
+        actionable_insight = "Design S-adenosyl-methionine (SAM) analogs as competitive inhibitors to disrupt defense signaling."
+        
+    analysis_results.append({
+        'Gene name': row['Gene name'],
+        'log2FC': f"{row['log2FoldChange']:.2f}",
+        'Structural_Interpretation': interpretation,
+        'Actionable_Insight_Drug_Discovery': actionable_insight
+    })
+
+structural_df = pd.DataFrame(analysis_results)
+
+print("\n--- Final Structural Summary for Top Candidates ---")
+print(structural_df.to_markdown(index=False))
